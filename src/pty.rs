@@ -145,9 +145,17 @@ impl PtyMaster {
         let raw = fd.as_raw_fd();
         unsafe {
             let flags = libc::fcntl(raw, libc::F_GETFL);
-            anyhow::ensure!(flags != -1, "fcntl F_GETFL: {}", std::io::Error::last_os_error());
+            anyhow::ensure!(
+                flags != -1,
+                "fcntl F_GETFL: {}",
+                std::io::Error::last_os_error()
+            );
             let ret = libc::fcntl(raw, libc::F_SETFL, flags | libc::O_NONBLOCK);
-            anyhow::ensure!(ret != -1, "fcntl F_SETFL: {}", std::io::Error::last_os_error());
+            anyhow::ensure!(
+                ret != -1,
+                "fcntl F_SETFL: {}",
+                std::io::Error::last_os_error()
+            );
         }
         Ok(PtyMaster(fd))
     }
@@ -156,18 +164,34 @@ impl PtyMaster {
 impl std::io::Read for &PtyMaster {
     fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
         let n = unsafe {
-            libc::read(self.0.as_raw_fd(), buf.as_mut_ptr() as *mut libc::c_void, buf.len())
+            libc::read(
+                self.0.as_raw_fd(),
+                buf.as_mut_ptr() as *mut libc::c_void,
+                buf.len(),
+            )
         };
-        if n < 0 { Err(std::io::Error::last_os_error()) } else { Ok(n as usize) }
+        if n < 0 {
+            Err(std::io::Error::last_os_error())
+        } else {
+            Ok(n as usize)
+        }
     }
 }
 
 impl std::io::Write for &PtyMaster {
     fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
         let n = unsafe {
-            libc::write(self.0.as_raw_fd(), buf.as_ptr() as *const libc::c_void, buf.len())
+            libc::write(
+                self.0.as_raw_fd(),
+                buf.as_ptr() as *const libc::c_void,
+                buf.len(),
+            )
         };
-        if n < 0 { Err(std::io::Error::last_os_error()) } else { Ok(n as usize) }
+        if n < 0 {
+            Err(std::io::Error::last_os_error())
+        } else {
+            Ok(n as usize)
+        }
     }
 
     fn flush(&mut self) -> std::io::Result<()> {
