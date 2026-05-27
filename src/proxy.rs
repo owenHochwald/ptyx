@@ -1,27 +1,30 @@
 use anyhow::{Context, Result};
+use crossterm::{cursor, execute, style, terminal};
 use futures_util::StreamExt;
 use nix::unistd::Pid;
 use signal_hook::consts::{SIGHUP, SIGTERM, SIGWINCH};
 use signal_hook_tokio::Signals;
 use std::io;
 use std::os::unix::io::AsRawFd;
-use std::time::Duration;
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use std::time::{Duration, Instant};
 use tokio::io::unix::AsyncFd;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 use crate::buffer::InputBuffer;
 use crate::config::Config;
+use crate::metrics::SessionMetrics;
 use crate::pty::{fork_ssh, open_pty, set_pty_size, wait_for_child, PtyMaster};
 use crate::terminal::Terminal;
 
 pub struct PtyProxy {
-    #[allow(dead_code)]
     config: Config,
     #[allow(dead_code)]
     terminal: Terminal,
     buffer: InputBuffer,
     master: AsyncFd<PtyMaster>,
     child_pid: Pid,
+    metrics: SessionMetrics,
+    last_flush_at: Option<Instant>,
 }
 
 impl PtyProxy {
@@ -31,10 +34,8 @@ impl PtyProxy {
         let ssh_args = config.ssh_args();
         let child_pid = fork_ssh(&pty, &ssh_args).context("fork_ssh")?;
 
-        // Parent closes slave; child already has it via dup2.
         drop(pty.slave);
 
-        // PtyMaster sets non-blocking mode; AsyncFd registers with tokio's reactor.
         let master_fd = PtyMaster::new(pty.master).context("PtyMaster::new")?;
         let initial_raw = master_fd.as_raw_fd();
         let master = AsyncFd::new(master_fd).context("AsyncFd::new")?;
@@ -45,10 +46,12 @@ impl PtyProxy {
             let _ = set_pty_size(initial_raw, rows, cols);
         }
 
-        let buffer = InputBuffer::new(
+        let mut buffer = InputBuffer::new(
             Duration::from_millis(config.buffer.flush_interval_ms),
             config.buffer.max_size,
         );
+        buffer.set_passthrough(config.buffer.passthrough);
+        buffer.set_adaptive(config.buffer.adaptive);
 
         Ok(PtyProxy {
             config,
@@ -56,6 +59,8 @@ impl PtyProxy {
             buffer,
             master,
             child_pid,
+            metrics: SessionMetrics::new(32),
+            last_flush_at: None,
         })
     }
 
@@ -69,17 +74,24 @@ impl PtyProxy {
         loop {
             let deadline = self.buffer.deadline();
             let buffer_nonempty = !self.buffer.is_empty();
+            let buffer_full = self.buffer.is_full();
+            let show_stats = self.config.show_stats;
 
             tokio::select! {
-                n = stdin.read(&mut input_byte) => {
+                // Backpressure: stop reading stdin when the buffer is saturated.
+                n = stdin.read(&mut input_byte), if !buffer_full => {
                     match n.context("stdin read")? {
                         0 => break,
                         _ => {
                             let flush_now = self.buffer.push_and_maybe_flush(input_byte[0]);
+                            self.metrics.set_buffer_depth(self.buffer.len());
                             if flush_now {
                                 let chunk = self.buffer.take();
+                                let batch = chunk.len();
                                 write_all_to_master(&self.master, &chunk).await
                                     .context("writing to PTY master")?;
+                                self.metrics.record_flush(batch);
+                                self.last_flush_at = Some(Instant::now());
                             }
                         }
                     }
@@ -87,8 +99,11 @@ impl PtyProxy {
 
                 _ = tokio::time::sleep_until(deadline.into()), if buffer_nonempty => {
                     let chunk = self.buffer.take();
+                    let batch = chunk.len();
                     write_all_to_master(&self.master, &chunk).await
                         .context("flushing buffer on deadline")?;
+                    self.metrics.record_flush(batch);
+                    self.last_flush_at = Some(Instant::now());
                 }
 
                 n = async {
@@ -106,8 +121,24 @@ impl PtyProxy {
                     match n {
                         Ok(0) | Err(_) => break,
                         Ok(n) => {
-                            stdout.write_all(&output_buf[..n]).await?;
+                            let chunk = &output_buf[..n];
+
+                            if contains_enter_raw(chunk) {
+                                self.buffer.set_passthrough(true);
+                                tracing::debug!("raw mode detected, buffer → passthrough");
+                            } else if contains_exit_raw(chunk) {
+                                self.buffer.set_passthrough(false);
+                                tracing::debug!("raw mode exit, buffer → normal");
+                            }
+
+                            stdout.write_all(chunk).await?;
                             stdout.flush().await?;
+
+                            if let Some(flush_time) = self.last_flush_at.take() {
+                                let rtt = flush_time.elapsed();
+                                self.metrics.record_rtt(rtt);
+                                self.buffer.set_adaptive_interval(self.metrics.rtt_estimate());
+                            }
                         }
                     }
                 }
@@ -127,6 +158,10 @@ impl PtyProxy {
                         _ => {}
                     }
                 }
+
+                _ = tokio::time::sleep(Duration::from_millis(250)), if show_stats => {
+                    render_stats_bar(&self.metrics);
+                }
             }
         }
 
@@ -135,7 +170,36 @@ impl PtyProxy {
     }
 }
 
-/// Write all bytes to the PTY master using readiness-based I/O (no lseek).
+fn contains_enter_raw(bytes: &[u8]) -> bool {
+    const ENTER: &[u8] = b"\x1b[?1049h";
+    bytes.windows(ENTER.len()).any(|w| w == ENTER)
+}
+
+fn contains_exit_raw(bytes: &[u8]) -> bool {
+    const EXIT: &[u8] = b"\x1b[?1049l";
+    bytes.windows(EXIT.len()).any(|w| w == EXIT)
+}
+
+fn render_stats_bar(m: &SessionMetrics) {
+    let bar = format!(
+        "[ptyx] RTT: {}ms  saved: {}B  flushes: {}",
+        m.rtt_estimate().as_millis(),
+        m.bytes_saved(),
+        m.total_flushes(),
+    );
+    let Ok((cols, rows)) = terminal::size() else {
+        return;
+    };
+    let _ = execute!(
+        std::io::stdout(),
+        cursor::SavePosition,
+        cursor::MoveTo(0, rows.saturating_sub(1)),
+        terminal::Clear(terminal::ClearType::CurrentLine),
+        style::Print(&bar[..bar.len().min(cols as usize)]),
+        cursor::RestorePosition,
+    );
+}
+
 async fn write_all_to_master(master: &AsyncFd<PtyMaster>, chunk: &[u8]) -> io::Result<()> {
     let mut written = 0;
     while written < chunk.len() {
@@ -159,5 +223,19 @@ mod tests {
     #[test]
     fn proxy_type_is_sized() {
         let _ = std::mem::size_of::<PtyProxy>();
+    }
+
+    #[test]
+    fn contains_enter_raw_detects_alt_screen_sequence() {
+        assert!(contains_enter_raw(b"\x1b[?1049h"));
+        assert!(contains_enter_raw(b"prefix\x1b[?1049hsuffix"));
+        assert!(!contains_enter_raw(b"hello world"));
+    }
+
+    #[test]
+    fn contains_exit_raw_detects_alt_screen_exit() {
+        assert!(contains_exit_raw(b"\x1b[?1049l"));
+        assert!(contains_exit_raw(b"prefix\x1b[?1049lsuffix"));
+        assert!(!contains_exit_raw(b"hello world"));
     }
 }
