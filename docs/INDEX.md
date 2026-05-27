@@ -44,10 +44,21 @@ benches/             # criterion benchmarks
 
 ---
 
+## Planning Documents (in project root)
+
+| File | Purpose |
+|------|---------|
+| [`TODO.md`](../TODO.md) | Master checklist — all phases, all tasks |
+| [`PHASE1.md`](../PHASE1.md) | Detailed plan: scaffold + PTY + core buffering |
+| [`PHASE2.md`](../PHASE2.md) | Detailed plan: adaptive buffering + metrics |
+
+---
+
 ## Design Invariants (never break these)
 
 1. **Proxy adds ≤ 2ms overhead** — buffering is bounded, not unbounded.
 2. **Never corrupt the byte stream** — mispredictions must be correctable, not silently wrong.
-3. **Raw mode = no prediction** — when remote app enables raw mode, pass bytes through untouched.
+3. **Raw mode = passthrough** — when remote app enables raw mode, bytes pass through untouched (no buffering, no prediction).
 4. **Locks are never held across blocking I/O.**
 5. **All I/O is async** — no `std::thread::sleep`, no blocking reads in the hot path.
+6. **Backpressure is mandatory** — stop reading stdin when buffer is full; never let it grow unbounded.
