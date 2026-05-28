@@ -1,6 +1,10 @@
 pub mod buffer;
 pub mod config;
+pub mod display;
 pub mod metrics;
+pub mod predict;
 pub mod proxy;
 pub mod pty;
+pub mod recorder;
+pub mod replay;
 pub mod terminal;
