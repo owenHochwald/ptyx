@@ -227,51 +227,51 @@ Status: ✅ Complete
 ## Phase 3 — Echo Prediction (Optional Enhancement)
 
 Goal: Typed characters appear instantly in cooked mode; mispredictions corrected silently.  
-Status: 🔴 Not started (blocked on Phase 2; de-prioritized — skip if project goals are met with Phase 2)
+Status: ✅ Complete
 
 ### 3.1 Echo Predictor (src/predict.rs)
 **Tests first:** (all from `docs/08-testing.md` EchoPredictor section)
-- [ ] `predicts_printable_ascii`
-- [ ] `predicts_backspace_as_erase_sequence`
-- [ ] `control_chars_not_echoed`
-- [ ] `confirmed_reconcile_resets_miss_streak`
-- [ ] `mispredicted_reconcile_increments_miss_streak`
-- [ ] `prediction_disabled_after_threshold_misses`
-- [ ] `raw_mode_escape_disables_prediction`
-- [ ] `exit_alt_screen_re_enables_prediction`
-- [ ] Integration: `full_cooked_mode_echo_roundtrip`
-- [ ] `bench_prediction_ascii` baseline saved
+- [x] `predicts_printable_ascii`
+- [x] `predicts_backspace_as_erase_sequence`
+- [x] `control_chars_not_echoed`
+- [x] `confirmed_reconcile_resets_miss_streak`
+- [x] `mispredicted_reconcile_increments_miss_streak`
+- [x] `prediction_disabled_after_threshold_misses`
+- [x] `raw_mode_escape_disables_prediction`
+- [x] `exit_alt_screen_re_enables_prediction`
+- [x] Integration: `full_cooked_mode_echo_roundtrip`
+- [x] `bench_prediction_ascii` baseline saved
 
 **Implement:**
-- [ ] `EchoPredictor`, `PendingInput`, `ReconcileResult`
-- [ ] `predict(&mut self, input: &[u8]) -> Option<String>`
-- [ ] `reconcile(&mut self, actual: &[u8]) -> ReconcileResult`
-- [ ] `check_output_for_raw_mode(&mut self, output: &[u8])`
-- [ ] Auto-disable after N consecutive misses
+- [x] `EchoPredictor`, `PendingInput`, `ReconcileResult`
+- [x] `predict(&mut self, input: &[u8]) -> Option<String>`
+- [x] `reconcile(&mut self, actual: &[u8]) -> ReconcileResult`
+- [x] `check_output_for_raw_mode(&mut self, output: &[u8])`
+- [x] Auto-disable after N consecutive misses
 
 ### 3.2 Display Layer (src/display.rs)
-- [ ] Add `display.rs` to module-structure.md table and docs/INDEX.md
-- [ ] `Display::write_predicted(&self, text: &str)`
-- [ ] `Display::write_raw(&self, bytes: &[u8])`
-- [ ] `Display::correct(&self, correction: &str)` — overwrite predicted text
+- [x] Add `display.rs` to module-structure.md table and docs/INDEX.md
+- [x] `Display::write_predicted(&self, text: &str)`
+- [x] `Display::write_raw(&self, bytes: &[u8])`
+- [x] `Display::correct(&self, correction: &str)` — overwrite predicted text
 
 ### 3.3 Wire Prediction into Proxy
-- [ ] Prediction only in cooked mode (not raw/binary)
-- [ ] Disable prediction when `--no-predict` flag set
-- [ ] Confirm prediction is off by default until Phase 3 stable
+- [x] Prediction only in cooked mode (not raw/binary)
+- [x] Disable prediction when `--no-predict` flag set (`--predict` opt-in; off by default)
+- [x] Confirm prediction is off by default until Phase 3 stable
 
 ---
 
 ## Phase 4 — Config File + Session Recording
 
 Goal: `~/.config/ptyx/config.toml` support; session replay; backend profiles.  
-Status: 🔴 Not started (blocked on Phase 3 or skip to directly after Phase 2)
+Status: ✅ Complete
 
-- [ ] TOML config: `[proxy]`, `[display]`, `[[backends]]` sections
-- [ ] CLI args override config file values (merge with precedence)
-- [ ] `SessionRecorder` plugin — logs all I/O to `~/.local/share/ptyx/sessions/`
-- [ ] `ptyx replay <session.log>` subcommand
-- [ ] `--config <path>` flag
+- [x] TOML config: `[proxy]`, `[display]`, `[[backends]]` sections
+- [x] CLI args override config file values (merge with precedence)
+- [x] `SessionRecorder` plugin — logs all I/O to `~/.local/share/ptyx/sessions/`
+- [x] `ptyx replay <session.log>` subcommand
+- [x] `--config <path>` flag
 
 ---
 
