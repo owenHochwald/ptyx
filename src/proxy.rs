@@ -12,8 +12,11 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 use crate::buffer::InputBuffer;
 use crate::config::Config;
+use crate::display::Display;
 use crate::metrics::SessionMetrics;
+use crate::predict::{EchoPredictor, ReconcileResult};
 use crate::pty::{fork_ssh, open_pty, set_pty_size, wait_for_child, PtyMaster};
+use crate::recorder::SessionRecorder;
 use crate::terminal::Terminal;
 
 pub struct PtyProxy {
@@ -25,6 +28,9 @@ pub struct PtyProxy {
     child_pid: Pid,
     metrics: SessionMetrics,
     last_flush_at: Option<Instant>,
+    predictor: EchoPredictor,
+    display: Display,
+    recorder: Option<SessionRecorder>,
 }
 
 impl PtyProxy {
@@ -53,6 +59,12 @@ impl PtyProxy {
         buffer.set_passthrough(config.buffer.passthrough);
         buffer.set_adaptive(config.buffer.adaptive);
 
+        let recorder = if config.record {
+            Some(SessionRecorder::new().context("creating session recorder")?)
+        } else {
+            None
+        };
+
         Ok(PtyProxy {
             config,
             terminal,
@@ -61,6 +73,9 @@ impl PtyProxy {
             child_pid,
             metrics: SessionMetrics::new(32),
             last_flush_at: None,
+            predictor: EchoPredictor::new(3),
+            display: Display::new(),
+            recorder,
         })
     }
 
@@ -88,6 +103,17 @@ impl PtyProxy {
                             if flush_now {
                                 let chunk = self.buffer.take();
                                 let batch = chunk.len();
+                                if let Some(ref mut rec) = self.recorder {
+                                    let _ = rec.record_input(&chunk);
+                                }
+                                // Predict per-flush, only in cooked (non-passthrough) mode.
+                                if self.config.predict && !self.buffer.is_passthrough() {
+                                    if let Some(echo) = self.predictor.predict(&chunk) {
+                                        if !echo.is_empty() {
+                                            self.display.write_predicted(&echo).ok();
+                                        }
+                                    }
+                                }
                                 write_all_to_master(&self.master, &chunk).await
                                     .context("writing to PTY master")?;
                                 self.metrics.record_flush(batch);
@@ -100,6 +126,17 @@ impl PtyProxy {
                 _ = tokio::time::sleep_until(deadline.into()), if buffer_nonempty => {
                     let chunk = self.buffer.take();
                     let batch = chunk.len();
+                    if let Some(ref mut rec) = self.recorder {
+                        let _ = rec.record_input(&chunk);
+                    }
+                    // Predict timed-flush batches too.
+                    if self.config.predict && !self.buffer.is_passthrough() {
+                        if let Some(echo) = self.predictor.predict(&chunk) {
+                            if !echo.is_empty() {
+                                self.display.write_predicted(&echo).ok();
+                            }
+                        }
+                    }
                     write_all_to_master(&self.master, &chunk).await
                         .context("flushing buffer on deadline")?;
                     self.metrics.record_flush(batch);
@@ -122,6 +159,9 @@ impl PtyProxy {
                         Ok(0) | Err(_) => break,
                         Ok(n) => {
                             let chunk = &output_buf[..n];
+                            if let Some(ref mut rec) = self.recorder {
+                                let _ = rec.record_output(chunk);
+                            }
 
                             if contains_enter_raw(chunk) {
                                 self.buffer.set_passthrough(true);
@@ -131,13 +171,45 @@ impl PtyProxy {
                                 tracing::debug!("raw mode exit, buffer → normal");
                             }
 
-                            stdout.write_all(chunk).await?;
-                            stdout.flush().await?;
-
-                            if let Some(flush_time) = self.last_flush_at.take() {
-                                let rtt = flush_time.elapsed();
-                                self.metrics.record_rtt(rtt);
-                                self.buffer.set_adaptive_interval(self.metrics.rtt_estimate());
+                            if self.config.predict {
+                                self.predictor.check_output_for_raw_mode(chunk);
+                                match self.predictor.reconcile(chunk) {
+                                    ReconcileResult::Confirmed { rtt } => {
+                                        self.metrics.record_hit(rtt);
+                                        self.display.clear_predicted();
+                                        self.last_flush_at = None;
+                                        self.buffer.set_adaptive_interval(
+                                            self.metrics.rtt_estimate(),
+                                        );
+                                    }
+                                    ReconcileResult::Mispredicted { rtt, correction } => {
+                                        self.metrics.record_miss(rtt);
+                                        self.display.correct(&correction).ok();
+                                        self.last_flush_at = None;
+                                        self.buffer.set_adaptive_interval(
+                                            self.metrics.rtt_estimate(),
+                                        );
+                                    }
+                                    ReconcileResult::Passthrough => {
+                                        stdout.write_all(chunk).await?;
+                                        stdout.flush().await?;
+                                        if let Some(flush_time) = self.last_flush_at.take() {
+                                            let rtt = flush_time.elapsed();
+                                            self.metrics.record_rtt(rtt);
+                                            self.buffer.set_adaptive_interval(
+                                                self.metrics.rtt_estimate(),
+                                            );
+                                        }
+                                    }
+                                }
+                            } else {
+                                stdout.write_all(chunk).await?;
+                                stdout.flush().await?;
+                                if let Some(flush_time) = self.last_flush_at.take() {
+                                    let rtt = flush_time.elapsed();
+                                    self.metrics.record_rtt(rtt);
+                                    self.buffer.set_adaptive_interval(self.metrics.rtt_estimate());
+                                }
                             }
                         }
                     }
@@ -182,9 +254,10 @@ fn contains_exit_raw(bytes: &[u8]) -> bool {
 
 fn render_stats_bar(m: &SessionMetrics) {
     let bar = format!(
-        "[ptyx] RTT: {}ms  saved: {}B  flushes: {}",
+        "[ptyx] RTT: {}ms  saved: {}B  acc: {:.0}%  flushes: {}",
         m.rtt_estimate().as_millis(),
         m.bytes_saved(),
+        m.prediction_accuracy() * 100.0,
         m.total_flushes(),
     );
     let Ok((cols, rows)) = terminal::size() else {
