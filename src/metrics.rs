@@ -78,6 +78,24 @@ impl SessionMetrics {
         }
     }
 
+    /// Record a confirmed prediction hit; also records the RTT for adaptive interval tuning.
+    pub fn record_hit(&mut self, rtt: Duration) {
+        if self.rtt_samples.len() == self.rtt_capacity {
+            self.rtt_samples.pop_front();
+        }
+        self.rtt_samples.push_back(rtt);
+        self.prediction_hits += 1;
+    }
+
+    /// Record a misprediction; also records the RTT.
+    pub fn record_miss(&mut self, rtt: Duration) {
+        if self.rtt_samples.len() == self.rtt_capacity {
+            self.rtt_samples.pop_front();
+        }
+        self.rtt_samples.push_back(rtt);
+        self.prediction_misses += 1;
+    }
+
     pub fn set_buffer_depth(&mut self, depth: usize) {
         self.current_buffer_depth = depth;
     }
@@ -139,6 +157,26 @@ mod tests {
     fn prediction_accuracy_vacuously_perfect_when_empty() {
         let m = SessionMetrics::new(8);
         assert_eq!(m.prediction_accuracy(), 1.0);
+    }
+
+    #[test]
+    fn prediction_accuracy_fraction() {
+        let mut m = SessionMetrics::new(8);
+        m.record_hit(Duration::from_millis(50));
+        m.record_hit(Duration::from_millis(50));
+        m.record_miss(Duration::from_millis(50));
+        // 2 hits, 1 miss → 2/3
+        assert!((m.prediction_accuracy() - 2.0 / 3.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn record_hit_also_records_rtt() {
+        let mut m = SessionMetrics::new(8);
+        m.record_hit(Duration::from_millis(100));
+        m.record_hit(Duration::from_millis(200));
+        m.record_hit(Duration::from_millis(300));
+        assert_eq!(m.rtt_estimate(), Duration::from_millis(200));
+        assert_eq!(m.prediction_accuracy(), 1.0); // 3 hits, 0 misses
     }
 
     #[test]
