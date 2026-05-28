@@ -32,10 +32,13 @@ src/
 ├── proxy.rs         # PtyProxy orchestrator
 ├── buffer.rs        # InputBuffer — flush timing & batching
 ├── predict.rs       # EchoPredictor — local echo & reconciliation
+├── display.rs       # Display — predicted echo output & correction
 ├── pty.rs           # PTY creation, fork, platform shims
 ├── terminal.rs      # Raw/cooked mode, SIGWINCH, crossterm
 ├── metrics.rs       # SessionMetrics — RTT, accuracy tracking
-└── config.rs        # Config deserialization (TOML)
+├── config.rs        # Config, FileConfig, RunMode, CLI merge logic
+├── recorder.rs      # SessionRecorder — I/O logging to .ptyx files
+└── replay.rs        # Session log parsing + async replay
 
 docs/                # ← you are here
 tests/               # Integration tests
