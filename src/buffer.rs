@@ -152,6 +152,10 @@ impl InputBuffer {
     pub fn has_incomplete_utf8(&self) -> bool {
         !self.utf8_carry.is_empty()
     }
+
+    pub fn is_passthrough(&self) -> bool {
+        self.passthrough
+    }
 }
 
 fn calculate_adaptive_interval(rtt: Duration) -> Duration {
