@@ -29,7 +29,12 @@ clap         = { version = "4", features = ["derive"] }
 [dev-dependencies]
 criterion = { version = "0.5", features = ["html_reports"] }
 proptest  = "1"
+tempfile  = "3"
 
 [[bench]]
 name = "buffer"
+harness = false
+
+[[bench]]
+name = "prediction"
 harness = false

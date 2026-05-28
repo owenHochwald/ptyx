@@ -742,6 +742,7 @@ dependencies = [
  "serde",
  "signal-hook",
  "signal-hook-tokio",
+ "tempfile",
  "tokio",
  "toml",
  "tracing",
