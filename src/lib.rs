@@ -2,6 +2,7 @@ pub mod buffer;
 pub mod config;
 pub mod display;
 pub mod metrics;
+pub mod persistence;
 pub mod predict;
 pub mod proxy;
 pub mod pty;

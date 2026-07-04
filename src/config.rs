@@ -3,6 +3,8 @@ use clap::{Parser, Subcommand};
 use serde::Deserialize;
 use std::path::{Path, PathBuf};
 
+use crate::persistence::PersistenceConfig;
+
 // ─── File-config structs (TOML deserialization) ───────────────────────────────
 
 /// Top-level structure of `~/.config/ptyx/config.toml`.
@@ -10,6 +12,7 @@ use std::path::{Path, PathBuf};
 pub struct FileConfig {
     pub proxy: Option<ProxyFileConfig>,
     pub display: Option<DisplayFileConfig>,
+    pub persistence: Option<PersistenceFileConfig>,
     pub backends: Option<Vec<BackendConfig>>,
 }
 
@@ -27,6 +30,15 @@ pub struct ProxyFileConfig {
 pub struct DisplayFileConfig {
     pub predict: Option<bool>,
     pub stats: Option<bool>,
+}
+
+/// `[persistence]` section in the TOML config file.
+#[derive(Debug, Deserialize, Default)]
+pub struct PersistenceFileConfig {
+    pub reconnect: Option<bool>,
+    pub reconnect_timeout_ms: Option<u64>,
+    pub reconnect_initial_delay_ms: Option<u64>,
+    pub reconnect_max_delay_ms: Option<u64>,
 }
 
 /// One entry in `[[backends]]` — a named SSH profile.
@@ -70,6 +82,8 @@ pub struct Config {
     pub predict: bool,
     /// Record session I/O to `~/.local/share/ptyx/sessions/`.
     pub record: bool,
+    /// Reconnect policy for replacing a disconnected SSH child.
+    pub persistence: PersistenceConfig,
     /// Path of the config file that was loaded (if any).
     pub config_path: Option<PathBuf>,
 }
@@ -140,6 +154,39 @@ impl RunMode {
                         .as_ref()
                         .and_then(|d| d.stats)
                         .unwrap_or(false);
+                let reconnect = cli.reconnect
+                    || file_config
+                        .persistence
+                        .as_ref()
+                        .and_then(|p| p.reconnect)
+                        .unwrap_or(false);
+                let reconnect_timeout_ms = cli
+                    .reconnect_timeout_ms
+                    .or_else(|| {
+                        file_config
+                            .persistence
+                            .as_ref()
+                            .and_then(|p| p.reconnect_timeout_ms)
+                    })
+                    .unwrap_or(10_000);
+                let reconnect_initial_delay_ms = cli
+                    .reconnect_initial_delay_ms
+                    .or_else(|| {
+                        file_config
+                            .persistence
+                            .as_ref()
+                            .and_then(|p| p.reconnect_initial_delay_ms)
+                    })
+                    .unwrap_or(100);
+                let reconnect_max_delay_ms = cli
+                    .reconnect_max_delay_ms
+                    .or_else(|| {
+                        file_config
+                            .persistence
+                            .as_ref()
+                            .and_then(|p| p.reconnect_max_delay_ms)
+                    })
+                    .unwrap_or(2_000);
 
                 let config_path_loaded = if config_path.exists() {
                     Some(config_path)
@@ -160,6 +207,12 @@ impl RunMode {
                     verbose: cli.verbose,
                     predict,
                     record: cli.record,
+                    persistence: PersistenceConfig {
+                        reconnect,
+                        reconnect_timeout_ms,
+                        reconnect_initial_delay_ms,
+                        reconnect_max_delay_ms,
+                    },
                     config_path: config_path_loaded,
                 }))
             }
@@ -247,6 +300,22 @@ struct Cli {
     #[arg(long = "record")]
     record: bool,
 
+    /// Reconnect by spawning a fresh SSH child after SIGHUP or child disconnect
+    #[arg(long = "reconnect")]
+    reconnect: bool,
+
+    /// Maximum reconnect window in milliseconds
+    #[arg(long = "reconnect-timeout")]
+    reconnect_timeout_ms: Option<u64>,
+
+    /// Initial reconnect backoff delay in milliseconds
+    #[arg(long = "reconnect-initial-delay")]
+    reconnect_initial_delay_ms: Option<u64>,
+
+    /// Maximum reconnect backoff delay in milliseconds
+    #[arg(long = "reconnect-max-delay")]
+    reconnect_max_delay_ms: Option<u64>,
+
     /// Extra arguments passed through to ssh
     #[arg(last = true)]
     ssh_args: Vec<String>,
@@ -276,6 +345,7 @@ mod tests {
             verbose: false,
             predict: false,
             record: false,
+            persistence: PersistenceConfig::default(),
             config_path: None,
         }
     }
@@ -396,6 +466,24 @@ mod tests {
         assert!(!cfg.record);
     }
 
+    #[test]
+    fn reconnect_flag_reflects_in_config() {
+        let cfg = Config {
+            persistence: PersistenceConfig {
+                reconnect: true,
+                ..PersistenceConfig::default()
+            },
+            ..make_config()
+        };
+        assert!(cfg.persistence.reconnect);
+    }
+
+    #[test]
+    fn default_config_reconnect_is_false() {
+        let cfg = make_config();
+        assert!(!cfg.persistence.reconnect);
+    }
+
     // ─── FileConfig TOML parsing ──────────────────────────────────────────────
 
     #[test]
@@ -430,6 +518,17 @@ mod tests {
     }
 
     #[test]
+    fn file_config_persistence_section_parsed() {
+        let toml = "[persistence]\nreconnect = true\nreconnect_timeout_ms = 5000\nreconnect_initial_delay_ms = 50\nreconnect_max_delay_ms = 1000\n";
+        let fc: FileConfig = toml::from_str(toml).unwrap();
+        let p = fc.persistence.unwrap();
+        assert_eq!(p.reconnect, Some(true));
+        assert_eq!(p.reconnect_timeout_ms, Some(5000));
+        assert_eq!(p.reconnect_initial_delay_ms, Some(50));
+        assert_eq!(p.reconnect_max_delay_ms, Some(1000));
+    }
+
+    #[test]
     fn file_config_backends_extra_args_default_empty() {
         let toml = "[[backends]]\nname = \"home\"\nhost = \"me@home\"\n";
         let fc: FileConfig = toml::from_str(toml).unwrap();
@@ -441,6 +540,7 @@ mod tests {
         let fc = FileConfig::default();
         assert!(fc.proxy.is_none());
         assert!(fc.display.is_none());
+        assert!(fc.persistence.is_none());
         assert!(fc.backends.is_none());
     }
 
@@ -559,5 +659,24 @@ mod tests {
                 .and_then(|d| d.predict)
                 .unwrap_or(false);
         assert!(predict);
+    }
+
+    #[test]
+    fn file_config_reconnect_applies() {
+        let file = FileConfig {
+            persistence: Some(PersistenceFileConfig {
+                reconnect: Some(true),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let cli_flag = false;
+        let reconnect = cli_flag
+            || file
+                .persistence
+                .as_ref()
+                .and_then(|p| p.reconnect)
+                .unwrap_or(false);
+        assert!(reconnect);
     }
 }

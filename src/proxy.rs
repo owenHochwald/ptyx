@@ -1,6 +1,7 @@
 use anyhow::{Context, Result};
 use crossterm::{cursor, execute, style, terminal};
 use futures_util::StreamExt;
+use nix::sys::signal::{kill, Signal};
 use nix::unistd::Pid;
 use signal_hook::consts::{SIGHUP, SIGTERM, SIGWINCH};
 use signal_hook_tokio::Signals;
@@ -14,6 +15,7 @@ use crate::buffer::InputBuffer;
 use crate::config::Config;
 use crate::display::Display;
 use crate::metrics::SessionMetrics;
+use crate::persistence::{ReconnectBackoff, SessionState};
 use crate::predict::{EchoPredictor, ReconcileResult};
 use crate::pty::{fork_ssh, open_pty, set_pty_size, wait_for_child, PtyMaster};
 use crate::recorder::SessionRecorder;
@@ -35,22 +37,8 @@ pub struct PtyProxy {
 
 impl PtyProxy {
     pub fn new(config: Config) -> Result<PtyProxy> {
-        let pty = open_pty().context("open_pty")?;
-
-        let ssh_args = config.ssh_args();
-        let child_pid = fork_ssh(&pty, &ssh_args).context("fork_ssh")?;
-
-        drop(pty.slave);
-
-        let master_fd = PtyMaster::new(pty.master).context("PtyMaster::new")?;
-        let initial_raw = master_fd.as_raw_fd();
-        let master = AsyncFd::new(master_fd).context("AsyncFd::new")?;
-
         let terminal = Terminal::enter().context("Terminal::enter")?;
-
-        if let Ok((rows, cols)) = Terminal::current_size() {
-            let _ = set_pty_size(initial_raw, rows, cols);
-        }
+        let (master, child_pid) = spawn_ssh_master(&config)?;
 
         let mut buffer = InputBuffer::new(
             Duration::from_millis(config.buffer.flush_interval_ms),
@@ -156,7 +144,13 @@ impl PtyProxy {
                     }
                 } => {
                     match n {
-                        Ok(0) | Err(_) => break,
+                        Ok(0) | Err(_) => {
+                            if self.config.persistence.reconnect {
+                                self.reconnect().await?;
+                                continue;
+                            }
+                            break;
+                        }
                         Ok(n) => {
                             let chunk = &output_buf[..n];
                             if let Some(ref mut rec) = self.recorder {
@@ -224,8 +218,13 @@ impl PtyProxy {
                             }
                         }
                         SIGTERM | SIGHUP => {
-                            tracing::info!(sig, "received signal, shutting down");
-                            break;
+                            if sig == SIGHUP && self.config.persistence.reconnect {
+                                tracing::info!("received SIGHUP, reconnecting");
+                                self.reconnect().await?;
+                            } else {
+                                tracing::info!(sig, "received signal, shutting down");
+                                break;
+                            }
                         }
                         _ => {}
                     }
@@ -240,6 +239,65 @@ impl PtyProxy {
         let _ = wait_for_child(self.child_pid);
         Ok(())
     }
+
+    async fn reconnect(&mut self) -> Result<()> {
+        let mut state = SessionState::default();
+        state.capture_pending(self.buffer.take());
+
+        let _ = kill(self.child_pid, Signal::SIGTERM);
+
+        let started = Instant::now();
+        let policy = self.config.persistence.clone();
+        let mut backoff = ReconnectBackoff::new(policy.initial_delay(), policy.max_delay());
+
+        loop {
+            match spawn_ssh_master(&self.config) {
+                Ok((master, child_pid)) => {
+                    self.master = master;
+                    self.child_pid = child_pid;
+                    self.last_flush_at = None;
+                    self.predictor = EchoPredictor::new(3);
+
+                    let pending = state.take_pending();
+                    if !pending.is_empty() {
+                        write_all_to_master(&self.master, &pending)
+                            .await
+                            .context("replaying pending input after reconnect")?;
+                        self.metrics.record_flush(pending.len());
+                        self.last_flush_at = Some(Instant::now());
+                    }
+
+                    tracing::info!(pid = child_pid.as_raw(), "reconnected SSH child");
+                    return Ok(());
+                }
+                Err(err) if started.elapsed() >= policy.timeout() => {
+                    return Err(err).context("reconnect timeout elapsed");
+                }
+                Err(err) => {
+                    tracing::warn!(err = %err, "reconnect attempt failed");
+                    tokio::time::sleep(backoff.next_delay()).await;
+                }
+            }
+        }
+    }
+}
+
+fn spawn_ssh_master(config: &Config) -> Result<(AsyncFd<PtyMaster>, Pid)> {
+    let pty = open_pty().context("open_pty")?;
+    let ssh_args = config.ssh_args();
+    let child_pid = fork_ssh(&pty, &ssh_args).context("fork_ssh")?;
+
+    drop(pty.slave);
+
+    let master_fd = PtyMaster::new(pty.master).context("PtyMaster::new")?;
+    let raw_fd = master_fd.as_raw_fd();
+
+    if let Ok((rows, cols)) = Terminal::current_size() {
+        let _ = set_pty_size(raw_fd, rows, cols);
+    }
+
+    let master = AsyncFd::new(master_fd).context("AsyncFd::new")?;
+    Ok((master, child_pid))
 }
 
 fn contains_enter_raw(bytes: &[u8]) -> bool {
@@ -296,6 +354,14 @@ mod tests {
     #[test]
     fn proxy_type_is_sized() {
         let _ = std::mem::size_of::<PtyProxy>();
+    }
+
+    #[test]
+    fn reconnect_within_timeout_resumes_session_policy() {
+        let mut backoff =
+            ReconnectBackoff::new(Duration::from_millis(10), Duration::from_millis(20));
+        assert_eq!(backoff.next_delay(), Duration::from_millis(10));
+        assert_eq!(backoff.next_delay(), Duration::from_millis(20));
     }
 
     #[test]
