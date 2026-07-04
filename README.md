@@ -52,7 +52,32 @@ Key options:
 3. `--no-buffer`: passthrough mode (use for scp/sftp or binary sessions)
 4. `--adaptive`: RTT-based adaptive flush interval
 5. `--stats`: live metrics bar (RTT, bytes saved, flushes)
-6. `-v, --verbose`: enable debug logging (sets `RUST_LOG=ptyx=debug` if unset)
+6. `--predict`: enable experimental local echo prediction
+7. `--record`: write a `.ptyx` session log to `~/.local/share/ptyx/sessions/`
+8. `--reconnect`: reconnect by spawning a fresh SSH child after SIGHUP/disconnect
+9. `-c, --config <path>`: load TOML config (default `~/.config/ptyx/config.toml`)
+10. `-v, --verbose`: enable debug logging (sets `RUST_LOG=ptyx=debug` if unset)
+
+Replay a recorded session:
+```bash
+cargo run -- replay ~/.local/share/ptyx/sessions/<session>.ptyx
+```
+
+Example config:
+```toml
+[proxy]
+flush_interval_ms = 20
+max_size = 512
+adaptive = true
+
+[display]
+stats = true
+predict = false
+
+[persistence]
+reconnect = true
+reconnect_timeout_ms = 10000
+```
 
 ## Development
 ```bash
@@ -60,11 +85,13 @@ cargo test
 cargo test --test '*'
 cargo clippy -- -D warnings
 cargo fmt --check
+cargo deny check
 ```
 
-## Roadmap (planned)
-- Echo prediction with reconciliation (Phase 3)
-- Session persistence and replay (Phase 4)
+## Roadmap
+- Complete: core buffering, adaptive metrics, echo prediction, config files, recording, replay
+- Current: reconnect-on-disconnect with local pending-input replay
+- Future: richer plugin hooks and production hardening
 
 ## License
 MIT — see [LICENSE](./LICENSE).

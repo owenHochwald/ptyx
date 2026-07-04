@@ -110,19 +110,19 @@ All tests in `docs/08-testing.md` under "EchoPredictor" section, plus:
 
 ## Phase 5 — Session Persistence (Mosh-Inspired)
 
-**Goal:** Brief network interruption doesn't kill the session.
+**Goal:** Brief SSH child interruption can spawn a fresh SSH child and replay locally buffered input.
 
-**Priority: LOW** — Complex; depends on Phase 4 infrastructure.
+**Status:** Complete for client-side reconnect. This is not full mosh-style remote process resurrection.
 
 ### Tests to write first
-- [ ] `test_reconnect_within_timeout_resumes_session`
-- [ ] `test_pending_buffer_replayed_on_reconnect`
+- [x] `reconnect_within_timeout_resumes_session_policy`
+- [x] `pending_buffer_replayed_on_reconnect`
 
 ### Implementation tasks
-1. Session state serialization
-2. Reconnect loop with exponential backoff
-3. Replay pending buffer on reconnect
-4. `SIGHUP` triggers reconnect instead of exit
+1. [x] Reconnect policy and timeout config
+2. [x] Reconnect loop with exponential backoff
+3. [x] Replay pending buffer on reconnect
+4. [x] `SIGHUP` triggers reconnect when `--reconnect` is enabled
 
 ---
 
