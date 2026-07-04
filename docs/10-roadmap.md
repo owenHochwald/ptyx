@@ -110,18 +110,18 @@ All tests in `docs/08-testing.md` under "EchoPredictor" section, plus:
 
 ## Phase 5 — Session Persistence (Mosh-Inspired)
 
-**Goal:** Brief SSH child interruption can spawn a fresh SSH child and replay locally buffered input.
+**Goal:** Brief SSH child interruption can spawn a fresh SSH child without replaying potentially sensitive buffered input.
 
 **Status:** Complete for client-side reconnect. This is not full mosh-style remote process resurrection.
 
 ### Tests to write first
 - [x] `reconnect_within_timeout_resumes_session_policy`
-- [x] `pending_buffer_replayed_on_reconnect`
+- [x] `reconnect_backoff_doubles_until_cap`
 
 ### Implementation tasks
 1. [x] Reconnect policy and timeout config
 2. [x] Reconnect loop with exponential backoff
-3. [x] Replay pending buffer on reconnect
+3. [x] Drop pending buffer on reconnect rather than replaying secrets across sessions
 4. [x] `SIGHUP` triggers reconnect when `--reconnect` is enabled
 
 ---

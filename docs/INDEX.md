@@ -37,7 +37,7 @@ src/
 ├── terminal.rs      # Raw/cooked mode, SIGWINCH, crossterm
 ├── metrics.rs       # SessionMetrics — RTT, accuracy tracking
 ├── config.rs        # Config, FileConfig, RunMode, CLI merge logic
-├── persistence.rs   # Reconnect policy, pending input, backoff
+├── persistence.rs   # Reconnect policy and backoff
 ├── recorder.rs      # SessionRecorder — I/O logging to .ptyx files
 └── replay.rs        # Session log parsing + async replay
 

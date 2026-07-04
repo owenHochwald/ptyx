@@ -15,7 +15,7 @@ use crate::buffer::InputBuffer;
 use crate::config::Config;
 use crate::display::Display;
 use crate::metrics::SessionMetrics;
-use crate::persistence::{ReconnectBackoff, SessionState};
+use crate::persistence::ReconnectBackoff;
 use crate::predict::{EchoPredictor, ReconcileResult};
 use crate::pty::{fork_ssh, open_pty, set_pty_size, wait_for_child, PtyMaster};
 use crate::recorder::SessionRecorder;
@@ -241,8 +241,13 @@ impl PtyProxy {
     }
 
     async fn reconnect(&mut self) -> Result<()> {
-        let mut state = SessionState::default();
-        state.capture_pending(self.buffer.take());
+        let dropped = self.buffer.take();
+        if !dropped.is_empty() {
+            tracing::warn!(
+                bytes = dropped.len(),
+                "dropping buffered input during reconnect"
+            );
+        }
 
         let _ = kill(self.child_pid, Signal::SIGTERM);
 
@@ -257,15 +262,6 @@ impl PtyProxy {
                     self.child_pid = child_pid;
                     self.last_flush_at = None;
                     self.predictor = EchoPredictor::new(3);
-
-                    let pending = state.take_pending();
-                    if !pending.is_empty() {
-                        write_all_to_master(&self.master, &pending)
-                            .await
-                            .context("replaying pending input after reconnect")?;
-                        self.metrics.record_flush(pending.len());
-                        self.last_flush_at = Some(Instant::now());
-                    }
 
                     tracing::info!(pid = child_pid.as_raw(), "reconnected SSH child");
                     return Ok(());

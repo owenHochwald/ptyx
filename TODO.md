@@ -277,15 +277,15 @@ Status: ✅ Complete
 
 ## Phase 5 — Session Persistence
 
-Goal: brief SSH child interruption can spawn a fresh SSH child and replay locally buffered input.  
+Goal: brief SSH child interruption can spawn a fresh SSH child without replaying potentially sensitive buffered input.  
 Status: ✅ Complete
 
 - [x] `--reconnect` flag and `[persistence]` config section
 - [x] Reconnect timeout and exponential backoff settings
 - [x] `SIGHUP` triggers reconnect when persistence is enabled
 - [x] PTY read EOF/error triggers reconnect when persistence is enabled
-- [x] Pending `InputBuffer` bytes are replayed to the new PTY master
-- [x] Tests for reconnect policy and pending-buffer replay
+- [x] Pending `InputBuffer` bytes are dropped during reconnect for security
+- [x] Tests for reconnect policy and backoff behavior
 
 Note: this is client-side reconnect, not mosh-style remote process resurrection.
 

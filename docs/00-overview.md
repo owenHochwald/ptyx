@@ -6,7 +6,7 @@ ptyx wraps an SSH session in a local PTY proxy that:
 - **Buffers** keystrokes for up to ~20ms then batches them into a single SSH write
 - **Predicts** the server's echo and displays it locally before the round-trip completes
 - **Reconciles** predictions against actual server output, correcting silently on mismatch
-- **Persists** sessions across network blips (Mosh-inspired reconnect)
+- **Reconnects** by starting a fresh SSH child after disconnect when explicitly enabled
 
 ## Latency Model
 
@@ -69,6 +69,8 @@ Net benefit is proportional to RTT: minimal on LAN (<5ms), large on WAN (100ms+)
 8. If match: no-op. If mismatch: overwrite display with correct output.
 9. `SessionMetrics` records RTT sample, prediction hit/miss.
 
+Reconnect deliberately drops any bytes still buffered locally. Replaying stale input into a fresh SSH session can leak secrets or execute context-dependent commands in the wrong shell state.
+
 ## Key Design Decisions
 
 | Decision | Choice | Rationale |
@@ -85,4 +87,4 @@ Net benefit is proportional to RTT: minimal on LAN (<5ms), large on WAN (100ms+)
 
 - Not a full SSH client — wraps the system `ssh` binary
 - Not a terminal emulator — defers rendering to the user's terminal
-- Not Mosh — reconnect is aspirational (Phase 4+)
+- Not Mosh — reconnect starts a fresh SSH child and does not preserve remote process state
